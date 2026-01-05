@@ -119,6 +119,22 @@ Returns 0 if invoked during the first 9 seconds."
 (defvar system-idle-seconds-function nil
   "Function to be invoked by `system-idle-seconds', must return a number.")
 
+(defun system-idle-seconds ()
+  "Return the number of seconds the system has been idle.
+
+Unlike `current-idle-time', the result is intended to be correct even
+while Emacs is not in focus, i.e. to return a value close to 0 if the
+user is still operating the computer but has a web browser or other
+application in focus.
+
+Always returns a number."
+  (unless system-idle-seconds-function
+    (system-idle-recalculate-variables t))
+  (let ((value (funcall system-idle-seconds-function)))
+    (if (numberp value)
+        value
+      (error "Function at system-idle-seconds-function did not return a number"))))
+
 (defun system-idle-recalculate-variables (&optional assert)
   "Try to set `system-idle-seconds-function', signal fails if ASSERT."
   (setq system-idle--x11-program
@@ -163,22 +179,6 @@ Returns 0 if invoked during the first 9 seconds."
                      (error "system-idle: Install x11idle or xprintidle"))))
             (when assert
               (error "system-idle: Could not get idle time on this system")))))
-
-(defun system-idle-seconds ()
-  "Return the number of seconds the system has been idle.
-
-Unlike `current-idle-time', the result is intended to be correct even
-while Emacs is not in focus, i.e. to return a value close to 0 if the
-user is still operating the computer but has a web browser or other
-application in focus.
-
-Always returns a number."
-  (unless system-idle-seconds-function
-    (system-idle-recalculate-variables t))
-  (let ((value (funcall system-idle-seconds-function)))
-    (if (numberp value)
-        value
-      (error "Function at system-idle-seconds-function did not return a number"))))
 
 ;; Maybe call `system-idle--ensure-swayidle' early.
 (system-idle-recalculate-variables)
