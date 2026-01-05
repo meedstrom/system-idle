@@ -30,8 +30,14 @@
 ;; - Mac OS
 ;; - Windows
 ;; - Wayland (GNOME)
-;; - Wayland (KDE)
+;; - Wayland (KDE) (after 9+ seconds)
+;;   - requires swayidle installed
 ;; - X11
+;;   - requires x11idle or xprintidle installed
+
+;; Test that it works:
+
+;; (run-with-timer 11 nil (lambda () (print (sys-idle-seconds))))
 
 ;;; Code:
 
@@ -161,7 +167,10 @@ Returns 0 if invoked during the first 9 seconds."
   "Return the number of seconds the system has been idle.
 
 Unlike `current-idle-time', the result is intended to be correct even
-while Emacs is not in focus.
+while Emacs is not in focus, i.e. to return a value close to 0 if the
+user is still operating the computer but has a web browser or other
+application in focus.
+
 Always returns a number."
   (unless sys-idle-seconds-function
     (sys-idle-recalculate-variables t))
