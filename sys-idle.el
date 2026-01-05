@@ -110,18 +110,13 @@ Returns 0 if invoked during the first 9 seconds."
       0)))
 
 (defvar sys-idle-seconds-function nil
-  "Function invoked by `sys-idle-seconds', must return a number.
-
-You can set this to `sys-idle-seconds-fallback'
-if you know what you are doing.")
+  "Function invoked by `sys-idle-seconds', must return a number.")
 
 (defun sys-idle-seconds ()
   "Return the number of seconds the system has been idle.
 
 Unlike `current-idle-time', the result is intended to be correct even
-while Emacs is not in focus.  However, that assumes that the current
-value of `sys-idle-seconds-function' does this correctly.
-
+while Emacs is not in focus.
 Always returns a number."
   (unless sys-idle-seconds-function
     (sys-idle-recalculate-variables t))
@@ -170,15 +165,6 @@ Always returns a number."
                      (error "sys-idle: Install x11idle or xprintidle"))))
             (when assert
               (error "sys-idle: Could not get idle time on this system")))))
-
-(defun sys-idle-seconds-fallback ()
-  "Copy of `org-emacs-idle-seconds'.
-
-Note that this can keep returning a higher number even while user is
-actively using the computer, because it technically returns the amount
-of time since Emacs was last in focus."
-  (let ((idle (current-idle-time)))
-    (if idle (float-time idle) 0)))
 
 (provide 'sys-idle)
 
