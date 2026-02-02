@@ -1,4 +1,5 @@
 ;;; system-idle.el --- Poll the system-wide idle time  -*- lexical-binding: t; -*-
+
 ;; Copyright (C) 2026 Martin Edström
 
 ;; This program is free software: you can redistribute it and/or modify
@@ -18,32 +19,45 @@
 ;; Created:  2026-01-05
 ;; Keywords: lisp
 ;; URL:      https://github.com/meedstrom/system-idle
-;; Package-Requires: ((emacs "28.1"))
+;; Package-Requires: ((emacs "29.1"))
 
 ;;; Commentary:
 
 ;; Call `system-idle-seconds' to get the number of seconds since last user
 ;; activity on the computer.
 
-;; Supports (for now):
+;; This differs from the built-in `current-idle-seconds', which can only be
+;; used for that purpose as long as Emacs is "in focus".
+
+;; This differs from `org-user-idle-seconds' in org-clock.el, by adding
+;; support for Wayland.  Hopefully more in the future.  Plus your code won't
+;; have to depend on loading Org, just this little library.
+
+;; Supported environments:
 
 ;; - Mac OS
-;; - Windows
 ;; - Wayland (GNOME)
-;; - Wayland (KDE) (after 9+ seconds)
-;;   - requires swayidle installed
+;; - Wayland (KDE and others supporting ext-idle-notify)
+;;   - https://wayland.app/protocols/ext-idle-notify-v1#compositor-support
+;;   - Returns 0 if invoked in the first 9 seconds or so
+;;   - Requires installing "swayidle"
 ;; - X11
-;;   - requires x11idle or xprintidle installed
+;;   - Requires installing "x11idle" or "xprintidle"
 
-;; Test that it works:
+;; To test that it works, eval the following and do not touch the computer for
+;; 11 seconds.
 
-;; (run-with-timer 11 nil (lambda () (print (system-idle-seconds))))
+;;     (run-with-timer 11 nil (lambda () (print (system-idle-seconds))))
 
+;; Not guaranteed to return correct results if user has switched from the
+;; graphical desktop to a TTY console by the time it is called.
+
+
 ;;; Code:
-
 ;;;; Plumbing:
 
 (require 'seq)
+(require 'cl-lib)
 (declare-function dbus-list-activatable-names "dbus" (&optional bus))
 (declare-function dbus-call-method "dbus" (bus service path interface method &rest args))
 (declare-function dbus-get-property "dbus" (bus service path interface property))
@@ -91,33 +105,62 @@
                    (buffer-string)))
          (idle-ms (if (string-match (rx space (+ digit) eol) output)
                       (string-to-number (match-string 0 output))
-                    (error "Function `system-idle--poll-gnome' not working"))))
+                    (error "system-idle--poll-gnome: Broken, did GNOME change API?"))))
     (/ idle-ms 1000.0)))
 
-;; https://github.com/swaywm/swayidle/issues/147
-;; https://github.com/swaywm/swayidle/issues/181
-;; https://github.com/marvin1099/wayidletool
 (defvar system-idle--swayidle-process nil)
-(defun system-idle--ensure-swayidle ()
-  "Ensure that our Swayidle instance is running."
+(defvar system-idle--touch-me-file
+  (let ((default-directory invocation-directory))
+    (with-temp-buffer
+      (expand-file-name "emacs-system-idle" (temporary-file-directory)))))
+
+(defun system-idle--ensure-swayidle (&optional restart)
+  "Ensure that our Swayidle instance is running.
+RESTART means restart it."
+  (when (and restart (processp system-idle--swayidle-process))
+    (delete-process system-idle--swayidle-process))
   (when (not (process-live-p system-idle--swayidle-process))
     (setq system-idle--swayidle-process
           (start-process-shell-command
-           "swayidle"
-           " *system-idle:swayidle*"
-           "swayidle timeout 9 'touch /tmp/emacs-system-idle' resume 'rm -f /tmp/emacs-system-idle'"))
+           "system-idle-swayidle"
+           " *system-idle-swayidle*"
+           (format "swayidle timeout 9 'touch %s' resume 'rm -f %s'"
+                   (shell-quote-argument system-idle--touch-me-file)
+                   (shell-quote-argument system-idle--touch-me-file))))
     (set-process-query-on-exit-flag system-idle--swayidle-process nil)))
 
 (defun system-idle--poll-swayidle ()
   "Check idle on compositors supporting the ext-idle-notify protocol.
-This includes KDE Plasma and Sway.
 Returns 0 if invoked during the first 9 seconds."
   (system-idle--ensure-swayidle)
-  (let ((attr (file-attributes "/tmp/emacs-system-idle")))
+  (let ((attr (file-attributes system-idle--touch-me-file)))
     (if attr
         (+ 9 (time-to-seconds
               (time-since (file-attribute-modification-time attr))))
       0)))
+
+;; Not verified the names, just guessing from this resource:
+;; https://wayland.app/protocols/ext-idle-notify-v1#compositor-support
+(defvar system-idle--swayidle-support-re
+  (rx word-boundary
+      (or "cage" "cosmic" "hyprland" "jay" "kwin" "labwc"
+          "louvre" "niri" "river" "sway" "treeland" "wayfire")
+      word-boundary)
+  "Regexp matching process invocation string of a supported compositor.")
+
+;; REVIEW: If we decide it's too sloppy to regexp-search the
+;; process-invocation string, maybe use XDG_CURRENT_DESKTOP:
+;; https://unix.stackexchange.com/a/645761
+;; But:
+;; https://old.reddit.com/r/swaywm/comments/vy4lrr/why_doesnt_sway_set_xdg_current_desktop/
+(defun system-idle--swayidle-supported-p ()
+  "Return t if the running compositor supports ext-idle-notify."
+  (cl-loop
+   for args in (mapcar (lambda (pid)
+                         (alist-get 'args (process-attributes pid)))
+                       (list-system-processes))
+   when (and args (string-match-p system-idle--swayidle-support-re args))
+   return t))
 
 
 ;;;; Porcelain:
@@ -133,18 +176,21 @@ while Emacs is not in focus, i.e. to return a value close to 0 if the
 user is still operating the computer but has a web browser or other
 application in focus.
 
-Always returns a number."
+Unlike `current-idle-time', always returns a floating-point number and
+never returns nil.
+
+If `system-idle-seconds-function' is `system-idle--poll-swayidle',
+returns 0.0 for the first ~9 seconds of idle."
   (unless system-idle-seconds-function
     (system-idle-reconfigure t))
   (let ((value (funcall system-idle-seconds-function)))
     (if (numberp value)
-        value
-      (error "Function at system-idle-seconds-function did not return a number"))))
+        (float value)
+      (error "Function system-idle-seconds-function did not return a number"))))
 
-;; TODO: Detect Sway and other Wayland compositors that support ext-idle-notify.
 (defun system-idle-reconfigure (&optional assert)
-  "Try to set up needed variables and return non-nil.
-Upon failure to do so, signal an error if ASSERT, else return nil."
+  "Try to set `system-idle-seconds-function' and return non-nil.
+Upon failure, signal an informative error if ASSERT, else return nil."
   (setq system-idle--x11-program
         (seq-find #'executable-find '("x11idle" "xprintidle")))
   (setq system-idle--dbus-session-path
@@ -161,26 +207,28 @@ Upon failure to do so, signal an error if ASSERT, else return nil."
   (setq system-idle-seconds-function
         (or (and (eq system-type 'darwin)
                  #'system-idle--poll-mac)
-            (let (;; TODO: Use this instead, it's the new standard
-                  ;; https://unix.stackexchange.com/questions/116539/how-to-detect-the-desktop-environment-in-a-bash-script
-                  ;; (XDG_CURRENT_DESKTOP (getenv "XDG_CURRENT_DESKTOP"))
-                  (DESKTOP_SESSION (getenv "DESKTOP_SESSION")))
+            (let ((DESKTOP_SESSION (getenv "DESKTOP_SESSION")))
               (and DESKTOP_SESSION
                    (not (string-search "xorg" DESKTOP_SESSION))
-                   (if (string-match-p (rx word-boundary (or "gnome" "ubuntu"))
-                                       DESKTOP_SESSION)
+                   (string-match-p (rx word-boundary (or "gnome" "ubuntu"))
+                                   DESKTOP_SESSION)
+                   (if (ignore-errors (system-idle--poll-gnome))
                        #'system-idle--poll-gnome
-                     (and (string-match-p (rx "plasma") DESKTOP_SESSION) ;; KDE
-                          (if (executable-find "swayidle")
-                              (progn (system-idle--ensure-swayidle)
-                                     #'system-idle--poll-swayidle)
-                            (when assert
-                              (error "system-idle: Install swayidle")))))))
+                     (when assert
+                       (system-idle--poll-gnome)))))
+            (and (not (memq system-type '(ms-dos windows-nt cygwin haiku android)))
+                 (system-idle--swayidle-supported-p)
+                 (if (executable-find "swayidle")
+                     (progn
+                       (system-idle--ensure-swayidle t)
+                       #'system-idle--poll-swayidle)
+                   (when assert
+                     (error "system-idle: Install swayidle"))))
             (and system-idle--dbus-session-path
                  #'system-idle--poll-logind)
             ;; NOTE: This condition is also true under XWayland, so it must come
             ;; after all other checks for Wayland compositors if we want it to be
-            ;; invoked under "true" X only.
+            ;; invoked under "native X" only.
             (and (eq window-system 'x)
                  (if system-idle--x11-program
                      #'system-idle--poll-x11
@@ -189,9 +237,15 @@ Upon failure to do so, signal an error if ASSERT, else return nil."
             (when assert
               (error "system-idle: Could not get idle time on this system")))))
 
-;; Maybe call `system-idle--ensure-swayidle' early.
-(system-idle-reconfigure)
+;; Maybe call `system-idle--ensure-swayidle' early, so `system-idle-seconds'
+;; returns an accurate value on first use.
+(unless system-idle-seconds-function
+  (system-idle-reconfigure))
 
 (provide 'system-idle)
 
 ;;; system-idle.el ends here
+
+;; Local Variables:
+;; emacs-lisp-docstring-fill-column: 72
+;; End:
