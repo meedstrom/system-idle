@@ -70,6 +70,8 @@
    (shell-command-to-string
     "ioreg -c IOHIDSystem | perl -ane 'if (/Idle/) {$idle=(pop @F)/1000000000; print $idle; last}'")))
 
+;;;;; x11idle:
+
 (defvar system-idle--x11-program nil)
 (defun system-idle--poll-x11 ()
   "Like `org-x11-idle-seconds'."
@@ -77,10 +79,13 @@
     (error "system-idle-seconds-x11: Install x11idle or xprintidle"))
   (with-temp-buffer
     (if (eq 0 (call-process system-idle--x11-program nil t))
-        (/ (string-to-number (buffer-string)) 1000)
+        (/ (string-to-number (buffer-string))
+           (float 1e3))
       (error "system-idle-seconds-x11: %s failed: %s"
              system-idle--x11-program
              (buffer-string)))))
+
+;;;;; elogind (and systemd-logind?):
 
 (defvar system-idle--dbus-session-path nil
   "Copy of `org-logind-dbus-session-path'.")
@@ -93,13 +98,15 @@
                            system-idle--dbus-session-path
                            "org.freedesktop.login1.Session"
                            "IdleSinceHint")
-        1e6)))
+        (float 1e6))))
+
+;;;;; GNOME:
 
 ;; https://unix.stackexchange.com/questions/396911/how-can-i-tell-if-a-user-is-idle-in-wayland
 (defun system-idle--poll-gnome ()
   "Check Mutter\\='s idea of idle time, even on Wayland."
   (let* ((output (with-temp-buffer
-                   (call-process "dbus-send" nil (current-buffer) nil
+                   (call-process "dbus-send" nil t nil
                                  "--print-reply"
                                  "--dest=org.gnome.Mutter.IdleMonitor"
                                  "/org/gnome/Mutter/IdleMonitor/Core"
@@ -108,7 +115,9 @@
          (idle-ms (if (string-match (rx space (+ digit) eol) output)
                       (string-to-number (match-string 0 output))
                     (error "system-idle--poll-gnome: Broken, did GNOME change API?"))))
-    (/ idle-ms 1000.0)))
+    (/ idle-ms (float 1e3))))
+
+;;;;; Swayidle:
 
 (defvar system-idle--swayidle-process nil)
 (defvar system-idle--touch-me-file
