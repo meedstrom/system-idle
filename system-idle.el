@@ -64,11 +64,29 @@
 (declare-function dbus-call-method "dbus" (bus service path interface method &rest args))
 (declare-function dbus-get-property "dbus" (bus service path interface property))
 
-(defun system-idle--poll-mac ()
+;;;;; MacOS:
+
+(defun system-idle--poll-mac-alt ()
   "Copy of `org-mac-idle-seconds'."
   (string-to-number
    (shell-command-to-string
     "ioreg -c IOHIDSystem | perl -ane 'if (/Idle/) {$idle=(pop @F)/1000000000; print $idle; last}'")))
+
+;; https://old.reddit.com/r/emacs/comments/1qzj8bh/a_little_library_systemidle/o4h5qh8/
+(defconst system-idle--poll-mac-re (rx "HIDIdleTime" (* (not digit)) (group (+ digit))))
+(defun system-idle--poll-mac ()
+  "Get idle time on MacOS."
+  (let ((match (save-match-data
+                 (with-temp-buffer
+                   (when (eq 0 (call-process "ioreg" nil t nil "-r" "-k" "HIDIdleTime"))
+                     (goto-char (point-min))
+                     (when (re-search-forward system-idle--poll-mac-re nil t)
+                       (match-string 1)))))))
+    (if match
+        (/ (string-to-number match)
+           (float 1e9))
+      (setq system-idle-seconds-function #'system-idle--poll-mac-alt)
+      (system-idle--poll-mac-alt))))
 
 ;;;;; x11idle:
 
