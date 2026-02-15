@@ -1,6 +1,6 @@
 Call `system-idle-seconds` to get the number of seconds since last user activity on the computer.
 
-This differs from the built-in `current-idle-seconds`, which can only be used for that purpose as long as Emacs is "in focus".
+This differs from the built-in `current-idle-time`, which can only be used for that purpose as long as Emacs is "in focus".
 
 This differs from `org-user-idle-seconds` in org-clock.el, by adding support for Wayland.  Hopefully more in the future.  Plus your code won't have to depend on loading Org, just this little library.
 
@@ -8,7 +8,7 @@ This differs from `org-user-idle-seconds` in org-clock.el, by adding support for
 
 - Mac OS
 - Wayland (GNOME)
-- Wayland (KDE Plasma, and other compositors supporting the [ext-idle-notify](https://wayland.app/protocols/ext-idle-notify-v1#compositor-support) protocol)
+- Wayland (KDE Plasma, and [other compositors](https://wayland.app/protocols/ext-idle-notify-v1#compositor-support) supporting the ext-idle-notify protocol)
     - Returns 0 if invoked in the first 9 seconds or so
     - Requires installing `swayidle`
 - X11 (GNOME)
