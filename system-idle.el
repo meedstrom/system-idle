@@ -147,17 +147,37 @@ RESTART means restart it."
   (when (and restart (processp system-idle--swayidle-process))
     (delete-process system-idle--swayidle-process))
   (when (not (process-live-p system-idle--swayidle-process))
-    (setq system-idle--swayidle-process
-          (let ((default-directory temporary-file-directory))
-            (start-process-shell-command
-             "system-idle-swayidle"
-             " *system-idle-swayidle*"
-             ;; TODO: Add an instruction to also touch the file when the
-             ;; system is manually put to sleep.
-             (format "swayidle timeout 9 'touch %s' resume 'rm -f %s'"
-                     (shell-quote-argument system-idle--touch-me-file)
-                     (shell-quote-argument system-idle--touch-me-file)))))
-    (set-process-query-on-exit-flag system-idle--swayidle-process nil)))
+    (let* ((default-directory temporary-file-directory) ; Local not remote plz.
+           (file (shell-quote-argument system-idle--touch-me-file))
+           (cmd-basic
+            (format "swayidle timeout 9 'touch %s' resume 'rm -f %s'"
+                    file file))
+           ;; Though perhaps going above and beyond the implied contract of
+           ;; our API, this helps programming mistakes wherein an Emacs timer
+           ;; is still slated to run from before the system was manually put
+           ;; to sleep and runs immediately after wakeup due to being overdue.
+           ;; Had we used the above command, manually putting the system to
+           ;; sleep would never create a `system-idle--touch-me-file'.  If
+           ;; that timer function is designed to react when
+           ;; `system-idle-seconds' is high, it won't react, because that
+           ;; would return 0.0 even after a long sleep.
+           ;; TODO: Move to https://git.sr.ht/~whynothugo/systemd-lock-handler
+           ;;       because Swayidle is aiming to drop these extensions.
+           ;; TODO: For BSD: https://github.com/swaywm/swayidle/issues/121
+           (cmd-with-logind-extension
+            (format (concat "swayidle timeout 9 'touch %s' resume 'rm -f %s'"
+                            " before-sleep '[ ! -f %s ] && touch %s'"
+                            " after-resume 'sleep 1 && rm -f %s'")
+                    file file file file file)))
+      (setq system-idle--swayidle-process
+            (if (eq 0 (call-process-shell-command "hash loginctl"))
+                (start-process-shell-command "system-idle-swayidle"
+                                             " *system-idle-swayidle*"
+                                             cmd-with-logind-extension)
+              (start-process-shell-command "system-idle-swayidle"
+                                           " *system-idle-swayidle*"
+                                           cmd-basic)))
+      (set-process-query-on-exit-flag system-idle--swayidle-process nil))))
 
 (defun system-idle--poll-swayidle ()
   "Check idle on compositors supporting the ext-idle-notify protocol.
